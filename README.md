@@ -12,7 +12,7 @@ A Splunk SPL-inspired data processing pipeline for pandas DataFrames.
 - **Splunk-like Syntax**: Familiar syntax for users coming from Splunk
 - **Query Optimization**: Built-in query planner with optimization support
 - **Extensible Architecture**: Easy to add custom commands
-- **20+ Built-in Commands**: Comprehensive set of data processing commands
+- **26 Built-in Commands**: Comprehensive set of data processing commands
 
 ## Requirements
 
@@ -90,6 +90,17 @@ print(result)
 | `mvexpand` | Expand multi-value fields | `mvexpand tags` |
 | `rex` | Extract fields using regex | `rex field=msg "user=(?<user>\w+)"` |
 
+### Time Series & Session Analysis
+| Command | Description | Example |
+|---------|-------------|---------|
+| `bucket` | Time binning for time series | `bucket _time span=5m` |
+| `transaction` | Group events into transactions | `transaction session_id maxspan=30s` |
+
+### Data Combination
+| Command | Description | Example |
+|---------|-------------|---------|
+| `append` | Append rows from another dataset | `append [search index="other"]` |
+
 ### Join Operations
 | Command | Description | Example |
 |---------|-------------|---------|
@@ -127,7 +138,7 @@ result = CommandExecutor(cmd).execute()
 ## Architecture
 
 ```
-data-cmd/
+RDP(Recursive Descent Parser)/
 ├── lexer.py              # Tokenizer for command strings
 ├── parser/
 │   ├── command_parser.py # Parse command pipeline
