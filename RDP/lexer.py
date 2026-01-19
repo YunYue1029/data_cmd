@@ -166,8 +166,15 @@ class CommandLexer:
                 escaped = self._current_char()
                 if escaped is not None:
                     # Handle escape sequences
-                    escape_map = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\"}
-                    value_chars.append(escape_map.get(escaped, escaped))
+                    # For known escape sequences, translate them
+                    # For unknown sequences (like \d in regex), preserve the backslash
+                    escape_map = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\", '"': '"', "'": "'"}
+                    if escaped in escape_map:
+                        value_chars.append(escape_map[escaped])
+                    else:
+                        # Preserve backslash for regex patterns like \d, \w, \s, etc.
+                        value_chars.append("\\")
+                        value_chars.append(escaped)
                     self._advance()
             else:
                 value_chars.append(char)

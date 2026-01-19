@@ -38,7 +38,7 @@ class RenameCommand(PipeCommand):
         if not self._ast_node:
             return
 
-        from syntax_tree.nodes import (
+        from RDP.syntax_tree.nodes import (
             KeywordArgumentNode,
             PositionalArgumentNode,
             LiteralNode,

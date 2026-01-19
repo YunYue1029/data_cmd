@@ -1,0 +1,4 @@
+{
+  "tests/commands/join/test_basic_join.py::TestJoinMultipleFields::test_join_on_two_fields": true,
+  "tests/commands/join/test_subquery_join.py::TestJoinWithSubqueryFilter::test_join_with_filtered_subquery": true
+}

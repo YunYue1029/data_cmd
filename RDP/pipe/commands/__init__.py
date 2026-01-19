@@ -42,6 +42,13 @@ from RDP.pipe.commands.rex import RexCommand
 # Join commands
 from RDP.pipe.commands.join import JoinCommand
 
+# Multi-source commands
+from RDP.pipe.commands.append import AppendCommand
+
+# Time analysis commands
+from RDP.pipe.commands.bucket import BucketCommand
+from RDP.pipe.commands.transaction import TransactionCommand
+
 __all__ = [
     # Base
     "PipeCommand",
@@ -75,4 +82,9 @@ __all__ = [
     "RexCommand",
     # Join
     "JoinCommand",
+    # Time analysis
+    "BucketCommand",
+    "TransactionCommand",
+    # Multi-source
+    "AppendCommand",
 ]

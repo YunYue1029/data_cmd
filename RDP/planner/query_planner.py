@@ -78,6 +78,17 @@ class QueryPlanner:
             plan.source_type = ast.source.source_type
             plan.source_name = ast.source.source_name
             plan.source_params = dict(ast.source.parameters)
+            
+            # Handle multi-source queries
+            if ast.source.multi_sources:
+                plan.source_params["multi_sources"] = [
+                    {
+                        "source_type": s.source_type,
+                        "source_name": s.source_name,
+                        "parameters": dict(s.parameters),
+                    }
+                    for s in ast.source.multi_sources
+                ]
 
         # Create steps from pipe chain
         for pipe_node in ast.pipe_chain:

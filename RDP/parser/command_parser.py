@@ -121,6 +121,10 @@ class CommandParser:
         """Parse source specification: cache=name, search index=name, etc."""
         position = self._current_token().position
 
+        # Check for multi-source pattern: (index="a" OR index="b")
+        if self._match(TokenType.LPAREN):
+            return self._parse_multi_source(position)
+
         # Check for source_type=source_name pattern
         if self._match(TokenType.IDENTIFIER):
             first_ident = self._advance()
@@ -148,6 +152,60 @@ class CommandParser:
                     )
 
         raise ParserError("Expected source specification", self._current_token())
+
+    def _parse_multi_source(self, position: int) -> SourceNode:
+        """
+        Parse multi-source specification: (index="a" OR index="b")
+        
+        Supports:
+            (index="a" OR index="b")
+            (cache=data1 OR cache=data2)
+        """
+        self._advance()  # consume (
+        
+        sources: list[SourceNode] = []
+        
+        while not self._match(TokenType.RPAREN, TokenType.EOF):
+            # Parse single source: index="name" or cache=name
+            if self._match(TokenType.IDENTIFIER):
+                source_type = self._advance().value.lower()
+                
+                if self._match(TokenType.EQUALS):
+                    self._advance()  # consume =
+                    source_name = self._parse_value_as_string()
+                    sources.append(SourceNode(
+                        source_type=source_type,
+                        source_name=source_name,
+                        position=self._current_token().position,
+                    ))
+                else:
+                    raise ParserError(
+                        f"Expected = after {source_type}", 
+                        self._current_token()
+                    )
+            
+            # Check for OR to continue
+            if self._match(TokenType.OR):
+                self._advance()  # consume OR
+            elif not self._match(TokenType.RPAREN):
+                break
+        
+        self._expect(TokenType.RPAREN)
+        
+        if not sources:
+            raise ParserError("Empty multi-source specification", self._current_token())
+        
+        if len(sources) == 1:
+            # Single source, return it directly
+            return sources[0]
+        
+        # Multiple sources
+        return SourceNode(
+            source_type="multi",
+            source_name="",
+            multi_sources=sources,
+            position=position,
+        )
 
     def _parse_search_source(self, position: int) -> SourceNode:
         """Parse search source: search index="name" ..."""
@@ -196,14 +254,22 @@ class CommandParser:
         # Parse arguments based on command type
         if cmd_name.lower() in ("stats", "eventstats"):
             self._parse_stats_arguments(node)
+        elif cmd_name.lower() in ("eval", "calculate", "compute"):
+            self._parse_eval_arguments(node)
         elif cmd_name.lower() == "sort":
             self._parse_sort_arguments(node)
         elif cmd_name.lower() == "join":
             self._parse_join_arguments(node)
         elif cmd_name.lower() == "head":
             self._parse_head_arguments(node)
-        elif cmd_name.lower() == "filter":
-            self._parse_filter_arguments(node)
+        elif cmd_name.lower() in ("filter", "where"):
+            self._parse_where_arguments(node)
+        elif cmd_name.lower() in ("bucket", "bin"):
+            self._parse_bucket_arguments(node)
+        elif cmd_name.lower() == "transaction":
+            self._parse_transaction_arguments(node)
+        elif cmd_name.lower() == "search":
+            self._parse_search_arguments(node)
         else:
             # Generic argument parsing
             self._parse_generic_arguments(node)
@@ -385,6 +451,256 @@ class CommandParser:
             else:
                 break
 
+    def _parse_where_arguments(self, node: PipeCommandNode) -> None:
+        """
+        Parse where/filter command arguments as raw expression string.
+        
+        Format: where <boolean_expression>
+        
+        Examples:
+            where status_code >= 400 AND status_code < 500
+            where uri LIKE "%api%"
+            where status_code IN (200, 201, 404)
+            where isnull(value)
+        
+        This method collects all tokens until PIPE or EOF and stores them
+        as a raw string for the FilterCommand to evaluate.
+        """
+        # Collect all tokens as a raw expression string
+        tokens = []
+        start_pos = self._current_token().position
+        
+        while not self._match(TokenType.PIPE, TokenType.EOF):
+            token = self._advance()
+            tokens.append(token.value)
+        
+        if tokens:
+            # Join tokens to form the expression string
+            expr_str = " ".join(tokens)
+            node.arguments.append(
+                PositionalArgumentNode(
+                    value=LiteralNode(value=expr_str, literal_type="string"),
+                    position=start_pos,
+                )
+            )
+
+    def _parse_bucket_arguments(self, node: PipeCommandNode) -> None:
+        """
+        Parse bucket command arguments.
+        Format: bucket field span=5m
+        
+        Handles time span format like 5m, 1h, 30s, 1d where number
+        and unit are parsed separately by the lexer.
+        """
+        # First, parse the field name (positional)
+        if self._match(TokenType.IDENTIFIER):
+            field_name = self._advance().value
+            node.arguments.append(
+                PositionalArgumentNode(
+                    value=IdentifierNode(name=field_name),
+                    position=self._current_token().position,
+                )
+            )
+
+        # Parse keyword arguments (span=5m)
+        while not self._match(TokenType.PIPE, TokenType.EOF):
+            if self._match(TokenType.IDENTIFIER):
+                if self._peek_token().type == TokenType.EQUALS:
+                    key = self._advance().value
+                    self._advance()  # consume =
+
+                    # For span argument, collect number + unit
+                    if key == "span" and self._match(TokenType.NUMBER):
+                        num_token = self._advance()
+                        span_value = str(num_token.value)
+
+                        # Check if next token is a unit identifier (s, m, h, d, w)
+                        if self._match(TokenType.IDENTIFIER):
+                            unit_token = self._advance()
+                            unit = unit_token.value.lower()
+                            if unit in ("s", "m", "h", "d", "w"):
+                                span_value += unit
+
+                        node.arguments.append(
+                            KeywordArgumentNode(
+                                key=key,
+                                value=LiteralNode(value=span_value, literal_type="string"),
+                                position=self._current_token().position,
+                            )
+                        )
+                    else:
+                        # Regular keyword argument
+                        value = self._parse_value()
+                        node.arguments.append(
+                            KeywordArgumentNode(
+                                key=key,
+                                value=value,
+                                position=self._current_token().position,
+                            )
+                        )
+                else:
+                    # Just an identifier without =, could be additional field
+                    break
+            else:
+                break
+
+    def _parse_transaction_arguments(self, node: PipeCommandNode) -> None:
+        """
+        Parse transaction command arguments.
+        Format: transaction group_field maxspan=5m
+        
+        Handles time span format like 5m, 1h, 30s where number
+        and unit are parsed separately by the lexer.
+        """
+        # First, parse the group field (positional)
+        if self._match(TokenType.IDENTIFIER):
+            field_name = self._advance().value
+            node.arguments.append(
+                PositionalArgumentNode(
+                    value=IdentifierNode(name=field_name),
+                    position=self._current_token().position,
+                )
+            )
+
+        # Parse keyword arguments (maxspan=5m)
+        while not self._match(TokenType.PIPE, TokenType.EOF):
+            if self._match(TokenType.IDENTIFIER):
+                if self._peek_token().type == TokenType.EQUALS:
+                    key = self._advance().value
+                    self._advance()  # consume =
+
+                    # For maxspan argument, collect number + unit
+                    if key == "maxspan" and self._match(TokenType.NUMBER):
+                        num_token = self._advance()
+                        span_value = str(num_token.value)
+
+                        # Check if next token is a unit identifier (s, m, h, d, w)
+                        if self._match(TokenType.IDENTIFIER):
+                            unit_token = self._advance()
+                            unit = unit_token.value.lower()
+                            if unit in ("s", "m", "h", "d", "w"):
+                                span_value += unit
+
+                        node.arguments.append(
+                            KeywordArgumentNode(
+                                key=key,
+                                value=LiteralNode(value=span_value, literal_type="string"),
+                                position=self._current_token().position,
+                            )
+                        )
+                    else:
+                        # Regular keyword argument
+                        value = self._parse_value()
+                        node.arguments.append(
+                            KeywordArgumentNode(
+                                key=key,
+                                value=value,
+                                position=self._current_token().position,
+                            )
+                        )
+                else:
+                    # Just an identifier without =
+                    break
+            else:
+                break
+
+    def _parse_search_arguments(self, node: PipeCommandNode) -> None:
+        """
+        Parse search command arguments.
+        Format: search index="name" latest=-5m earliest="2024-01-01"
+        
+        Handles time span format like -5m, -1h where number and unit
+        may be parsed separately by the lexer.
+        """
+        while not self._match(TokenType.PIPE, TokenType.EOF):
+            if self._match(TokenType.IDENTIFIER):
+                if self._peek_token().type == TokenType.EQUALS:
+                    key = self._advance().value
+                    self._advance()  # consume =
+
+                    # For latest/earliest arguments, handle relative time format
+                    if key in ("latest", "earliest"):
+                        # Check for NUMBER (which may be negative like -5)
+                        if self._match(TokenType.NUMBER):
+                            num_token = self._advance()
+                            time_value = str(num_token.value)
+
+                            # Check if next token is a unit identifier (s, m, h, d, w)
+                            if self._match(TokenType.IDENTIFIER):
+                                unit_token = self._advance()
+                                unit = unit_token.value.lower()
+                                if unit in ("s", "m", "h", "d", "w"):
+                                    time_value += unit
+
+                            node.arguments.append(
+                                KeywordArgumentNode(
+                                    key=key,
+                                    value=LiteralNode(value=time_value, literal_type="string"),
+                                    position=self._current_token().position,
+                                )
+                            )
+                            continue
+                        elif self._match(TokenType.STRING):
+                            # Absolute time string
+                            value_token = self._advance()
+                            node.arguments.append(
+                                KeywordArgumentNode(
+                                    key=key,
+                                    value=LiteralNode(value=value_token.value, literal_type="string"),
+                                    position=self._current_token().position,
+                                )
+                            )
+                            continue
+
+                    # Regular keyword argument
+                    value = self._parse_value()
+                    node.arguments.append(
+                        KeywordArgumentNode(
+                            key=key,
+                            value=value,
+                            position=self._current_token().position,
+                        )
+                    )
+                else:
+                    # Just an identifier without =
+                    break
+            else:
+                break
+
+    def _parse_eval_arguments(self, node: PipeCommandNode) -> None:
+        """
+        Parse eval command arguments.
+        Format: eval field=expression, field2=expression2, ...
+        
+        Expressions can contain arithmetic operations, function calls, etc.
+        """
+        while not self._match(TokenType.PIPE, TokenType.EOF):
+            # Expect: field_name = expression
+            if self._match(TokenType.IDENTIFIER):
+                field_name = self._advance().value
+                
+                if self._match(TokenType.EQUALS):
+                    self._advance()  # consume =
+                    # Parse the full expression (not just a simple value)
+                    expr = self._parse_expression()
+                    node.arguments.append(
+                        KeywordArgumentNode(
+                            key=field_name,
+                            value=expr,
+                            position=self._current_token().position,
+                        )
+                    )
+                    
+                    # Check for comma (multiple assignments)
+                    if self._match(TokenType.COMMA):
+                        self._advance()
+                        continue
+                else:
+                    # Not an assignment, might be end of eval args
+                    break
+            else:
+                break
+
     def _parse_generic_arguments(self, node: PipeCommandNode) -> None:
         """Parse generic command arguments."""
         while not self._match(TokenType.PIPE, TokenType.EOF):
@@ -428,7 +744,47 @@ class CommandParser:
 
     def _parse_expression(self) -> ASTNode:
         """Parse an expression (for function arguments, etc.)."""
-        return self._parse_additive()
+        return self._parse_or_expression()
+
+    def _parse_or_expression(self) -> ASTNode:
+        """Parse OR expression: and_expr (OR and_expr)*"""
+        left = self._parse_and_expression()
+
+        while self._match(TokenType.OR):
+            self._advance()  # consume OR
+            right = self._parse_and_expression()
+            left = BinaryOpNode(left=left, operator="OR", right=right,
+                               position=self._current_token().position)
+
+        return left
+
+    def _parse_and_expression(self) -> ASTNode:
+        """Parse AND expression: comparison (AND comparison)*"""
+        left = self._parse_comparison()
+
+        while self._match(TokenType.AND):
+            self._advance()  # consume AND
+            right = self._parse_comparison()
+            left = BinaryOpNode(left=left, operator="AND", right=right,
+                               position=self._current_token().position)
+
+        return left
+
+    def _parse_comparison(self) -> ASTNode:
+        """Parse comparison expression: additive ((>|<|>=|<=|==|!=|=) additive)*"""
+        left = self._parse_additive()
+
+        # Include EQUALS for single = comparisons (common in Splunk syntax like 1=1)
+        while self._match(TokenType.GT, TokenType.LT, TokenType.GTE, 
+                         TokenType.LTE, TokenType.EQ, TokenType.NEQ, TokenType.EQUALS):
+            op_token = self._advance()
+            # Normalize single = to == for comparison
+            op = "==" if op_token.type == TokenType.EQUALS else op_token.value
+            right = self._parse_additive()
+            left = BinaryOpNode(left=left, operator=op, right=right, 
+                               position=self._current_token().position)
+
+        return left
 
     def _parse_additive(self) -> ASTNode:
         """Parse additive expression: term ((+|-) term)*"""

@@ -88,13 +88,17 @@ class CommandExecutor:
         Get the source DataFrame based on source specification.
 
         Args:
-            source_type: Type of source (cache, search, etc.)
+            source_type: Type of source (cache, search, multi, etc.)
             source_name: Name of the source
             params: Additional parameters
 
         Returns:
             The source DataFrame
         """
+        # Handle multi-source queries
+        if source_type == "multi" and "multi_sources" in params:
+            return self._get_multi_source_data(params["multi_sources"])
+
         if source_type == "cache":
             df = DataFrameCache.get(source_name)
             if df is None:
@@ -103,6 +107,13 @@ class CommandExecutor:
 
         elif source_type == "search":
             # Search uses cache as the index source
+            df = DataFrameCache.get(source_name)
+            if df is None:
+                raise ValueError(f"Index not found: {source_name}")
+            return df
+
+        elif source_type == "index":
+            # Index is an alias for search
             df = DataFrameCache.get(source_name)
             if df is None:
                 raise ValueError(f"Index not found: {source_name}")
@@ -117,6 +128,50 @@ class CommandExecutor:
 
         else:
             raise ValueError(f"Unknown source type: {source_type}")
+
+    def _get_multi_source_data(
+        self,
+        sources: list[dict[str, Any]],
+    ) -> pd.DataFrame:
+        """
+        Get data from multiple sources and combine them.
+
+        Args:
+            sources: List of source specifications
+
+        Returns:
+            Combined DataFrame from all sources
+        """
+        dfs = []
+        for source in sources:
+            source_type = source["source_type"]
+            source_name = source["source_name"]
+            
+            # Get data from each source
+            if source_type in ("cache", "search", "index"):
+                df = DataFrameCache.get(source_name)
+                if df is None:
+                    raise ValueError(f"Source not found: {source_name}")
+                dfs.append(df)
+            else:
+                raise ValueError(f"Unknown source type in multi-source: {source_type}")
+        
+        if not dfs:
+            return pd.DataFrame()
+        
+        # Combine all DataFrames
+        # Align columns - include all columns from all DataFrames
+        all_columns = []
+        for df in dfs:
+            for col in df.columns:
+                if col not in all_columns:
+                    all_columns.append(col)
+        
+        # Reindex all DataFrames to have all columns
+        aligned_dfs = [df.reindex(columns=all_columns) for df in dfs]
+        
+        # Concatenate
+        return pd.concat(aligned_dfs, ignore_index=True)
 
 
 class SubqueryExecutor:

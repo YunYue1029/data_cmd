@@ -162,15 +162,20 @@ class SubqueryNode(ASTNode):
 class SourceNode(ASTNode):
     """Represents the data source part of a command."""
 
-    source_type: str  # "cache", "search", "index", etc.
+    source_type: str  # "cache", "search", "index", "multi", etc.
     source_name: str
     parameters: dict[str, Any] = field(default_factory=dict)
     position: int = 0
+    # For multi-source queries like (index="a" OR index="b")
+    multi_sources: list["SourceNode"] | None = None
 
     def __post_init__(self) -> None:
         super().__init__(self.position)
 
     def __repr__(self) -> str:
+        if self.multi_sources:
+            sources_str = " OR ".join(str(s) for s in self.multi_sources)
+            return f"MultiSource({sources_str})"
         params_str = ", ".join(f"{k}={v!r}" for k, v in self.parameters.items())
         if params_str:
             return f"Source({self.source_type}={self.source_name}, {params_str})"

@@ -46,7 +46,7 @@ class RexCommand(PipeCommand):
         if not self._ast_node:
             return
 
-        from syntax_tree.nodes import (
+        from RDP.syntax_tree.nodes import (
             PositionalArgumentNode,
             KeywordArgumentNode,
             LiteralNode,
@@ -56,22 +56,70 @@ class RexCommand(PipeCommand):
         for arg in self._ast_node.arguments:
             if isinstance(arg, PositionalArgumentNode):
                 if isinstance(arg.value, LiteralNode):
-                    # Positional argument is the pattern
-                    if not self.pattern:
-                        self.pattern = str(arg.value.value)
+                    val = str(arg.value.value)
+                    # Check for sed-style s/pattern/replacement/ syntax
+                    if val.startswith("s/") and "/" in val[2:]:
+                        self._parse_sed_syntax(val)
+                    elif not self.pattern:
+                        self.pattern = val
             elif isinstance(arg, KeywordArgumentNode):
+                # Handle both LiteralNode and IdentifierNode values
                 if isinstance(arg.value, LiteralNode):
                     val = str(arg.value.value)
-                    if arg.key == "field":
-                        self.field = val
-                    elif arg.key == "pattern":
-                        self.pattern = val
-                    elif arg.key == "mode":
-                        self.mode = val.lower()
-                    elif arg.key == "replacement":
-                        self.replacement = val
-                    elif arg.key == "max_match":
-                        self.max_match = int(val)
+                elif isinstance(arg.value, IdentifierNode):
+                    val = arg.value.name
+                else:
+                    val = str(arg.value)
+                
+                if arg.key == "field":
+                    self.field = val
+                elif arg.key == "pattern":
+                    self.pattern = val
+                elif arg.key == "mode":
+                    self.mode = val.lower()
+                elif arg.key == "replacement":
+                    self.replacement = val
+                elif arg.key == "max_match":
+                    self.max_match = int(val)
+
+    def _parse_sed_syntax(self, sed_expr: str) -> None:
+        """
+        Parse sed-style s/pattern/replacement/ syntax.
+        
+        Args:
+            sed_expr: Expression like "s/Hello/Hi/" or "s/pattern/replacement/g"
+        """
+        # Remove the leading 's/'
+        expr = sed_expr[2:]
+        
+        # Find the delimiter (first character after s/)
+        # Handle escaped delimiters
+        parts = []
+        current = []
+        i = 0
+        while i < len(expr):
+            char = expr[i]
+            if char == "\\":
+                # Escaped character - include it
+                if i + 1 < len(expr):
+                    current.append(char)
+                    current.append(expr[i + 1])
+                    i += 2
+                    continue
+            elif char == "/":
+                parts.append("".join(current))
+                current = []
+            else:
+                current.append(char)
+            i += 1
+        
+        if current:
+            parts.append("".join(current))
+        
+        if len(parts) >= 2:
+            self.pattern = parts[0]
+            self.replacement = parts[1]
+            self.mode = "sed"
 
     def _parse_from_args(self, args: list[str]) -> None:
         """Parse from args list."""
@@ -86,6 +134,9 @@ class RexCommand(PipeCommand):
                 self.replacement = arg[12:].strip('"\'')
             elif arg.startswith("max_match="):
                 self.max_match = int(arg[10:])
+            elif arg.startswith("s/") and "/" in arg[2:]:
+                # sed-style s/pattern/replacement/ syntax
+                self._parse_sed_syntax(arg)
             elif not self.pattern and (arg.startswith('"') or arg.startswith("'")):
                 self.pattern = arg.strip('"\'')
             elif not self.pattern:
@@ -111,8 +162,11 @@ class RexCommand(PipeCommand):
             )
         else:
             # Extract mode - use named capture groups
+            # Convert Perl-style (?<name>) to Python-style (?P<name>)
+            pattern = re.sub(r'\(\?<(\w+)>', r'(?P<\1>', self.pattern)
+            
             try:
-                compiled = re.compile(self.pattern)
+                compiled = re.compile(pattern)
             except re.error as e:
                 raise ValueError(f"Invalid regex pattern: {e}")
 
@@ -121,12 +175,12 @@ class RexCommand(PipeCommand):
 
             if not group_names:
                 # No named groups - try to extract to a default field
-                extracted = result[self.field].astype(str).str.extract(self.pattern)
+                extracted = result[self.field].astype(str).str.extract(pattern)
                 for i, col in enumerate(extracted.columns):
                     result[f"extract_{i+1}"] = extracted[col]
             else:
                 # Extract named groups
-                extracted = result[self.field].astype(str).str.extract(self.pattern)
+                extracted = result[self.field].astype(str).str.extract(pattern)
 
                 # Rename columns to match named groups
                 for i, name in enumerate(group_names):

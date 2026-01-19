@@ -7,8 +7,11 @@ Supports aggregation functions:
 - min(field), max(field)
 - values(field) - list of unique values
 - first(field), last(field)
+- stdev(field) - standard deviation
+- perc<N>(field) - percentile (e.g., perc50, perc75, perc90, perc95, perc99)
 """
 
+import re
 from typing import Any
 
 import pandas as pd
@@ -150,6 +153,21 @@ class StatsCommand(PipeCommand):
                 agg_specs.append((alias, field_name, "values", lambda x: list(x.unique())))
             elif func in ("dc", "distinct_count"):
                 agg_specs.append((alias, field_name, "nunique", "nunique"))
+            elif func in ("stdev", "std", "stddev"):
+                agg_specs.append((alias, field_name, "std", "std"))
+            elif func == "var":
+                agg_specs.append((alias, field_name, "var", "var"))
+            elif func == "median":
+                agg_specs.append((alias, field_name, "median", "median"))
+            elif self._is_percentile_func(func):
+                # Handle percentile functions like perc50, perc95, p50, p95
+                percentile = self._extract_percentile(func)
+                agg_specs.append((
+                    alias, 
+                    field_name, 
+                    f"perc{percentile}", 
+                    lambda x, p=percentile: x.quantile(p / 100)
+                ))
             else:
                 raise ValueError(f"Unknown aggregation function: {func}")
 
@@ -190,4 +208,18 @@ class StatsCommand(PipeCommand):
         if field:
             return f"{func}_{field}"
         return func
+
+    def _is_percentile_func(self, func: str) -> bool:
+        """Check if function is a percentile function (perc50, p95, etc.)."""
+        # Match patterns like: perc50, perc95, p50, p95, percentile50
+        pattern = r"^(perc|p|percentile)(\d+)$"
+        return bool(re.match(pattern, func, re.IGNORECASE))
+
+    def _extract_percentile(self, func: str) -> int:
+        """Extract percentile value from function name."""
+        pattern = r"^(perc|p|percentile)(\d+)$"
+        match = re.match(pattern, func, re.IGNORECASE)
+        if match:
+            return int(match.group(2))
+        raise ValueError(f"Invalid percentile function: {func}")
 

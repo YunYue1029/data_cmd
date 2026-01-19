@@ -40,7 +40,7 @@ class SortCommand(PipeCommand):
         if not self._ast_node:
             return
 
-        from syntax_tree.nodes import PositionalArgumentNode, LiteralNode, IdentifierNode
+        from RDP.syntax_tree.nodes import PositionalArgumentNode, LiteralNode, IdentifierNode
 
         for arg in self._ast_node.arguments:
             if isinstance(arg, PositionalArgumentNode):

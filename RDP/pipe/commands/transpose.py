@@ -39,7 +39,7 @@ class TransposeCommand(PipeCommand):
         if not self._ast_node:
             return
 
-        from syntax_tree.nodes import KeywordArgumentNode, LiteralNode
+        from RDP.syntax_tree.nodes import KeywordArgumentNode, LiteralNode
 
         for arg in self._ast_node.arguments:
             if isinstance(arg, KeywordArgumentNode):
