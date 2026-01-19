@@ -23,7 +23,7 @@ A Splunk SPL-inspired data processing pipeline for pandas DataFrames.
 
 ```python
 import pandas as pd
-from executors import CommandExecutor, register_cache
+from RDP.executors import CommandExecutor, register_cache
 
 # Create sample data
 df = pd.DataFrame({
