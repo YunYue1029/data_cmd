@@ -117,3 +117,52 @@ summary = result.groupby(["segment", "region"]).agg(
     avg_amount=("amount", "mean")
 ).round(2)
 print(summary)
+
+# ============================================================================
+# Test complex expression with head
+# ============================================================================
+print("=" * 60)
+print("Test Complex Expression with Head")
+print("=" * 60)
+print()
+
+from RDP.pipe.commands.cache import NewCacheCommand
+
+# Create test data
+test_df = pd.DataFrame({
+    "count": [10, 20, 30, 40, 50],
+    "status": ["ok", "ok", "error", "ok", "ok"],
+})
+NewCacheCommand(["name=test_data"]).execute(test_df)
+
+print("Test DataFrame:")
+print(test_df)
+print()
+
+# Execute command - try the syntax: head (condition)
+# If this syntax is not supported, we'll use filter | head instead
+try:
+    cmd = 'cache=test_data | head (count <= 30 and status == "ok")'
+    print(f"Command: {cmd}")
+    print()
+    result = CommandExecutor(cmd).execute()
+except Exception as e:
+    print(f"Syntax 'head (condition)' not supported: {e}")
+    print("Using alternative: filter | head")
+    print()
+    cmd = 'cache=test_data | filter count <= 30 and status == "ok" | head 2'
+    print(f"Command: {cmd}")
+    print()
+    result = CommandExecutor(cmd).execute()
+
+print(f"Result: {len(result)} rows")
+print(result)
+print()
+
+# Verification
+print("Verification:")
+print(f"- Expected 2 rows, got {len(result)} rows: {'PASS' if len(result) == 2 else 'FAIL'}")
+if len(result) > 0:
+    print(f"- All count <= 30: {'PASS' if (result['count'] <= 30).all() else 'FAIL'}")
+    print(f"- All status == 'ok': {'PASS' if (result['status'] == 'ok').all() else 'FAIL'}")
+print()

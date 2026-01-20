@@ -465,14 +465,110 @@ class CommandParser:
         
         This method collects all tokens until PIPE or EOF and stores them
         as a raw string for the FilterCommand to evaluate.
+        
+        Special handling: In LIKE expressions, wildcards (* and %) should be
+        merged with adjacent identifiers if they're not in quotes.
         """
-        # Collect all tokens as a raw expression string
-        tokens = []
+        # Collect all tokens with their types for processing
+        token_list = []
         start_pos = self._current_token().position
         
         while not self._match(TokenType.PIPE, TokenType.EOF):
             token = self._advance()
-            tokens.append(token.value)
+            token_list.append(token)
+        
+        if not token_list:
+            return
+        
+        # Check if this is a LIKE expression and merge wildcards
+        # Look for LIKE keyword in the tokens
+        like_index = None
+        for i, token in enumerate(token_list):
+            if token.type == TokenType.IDENTIFIER and token.value.upper() == "LIKE":
+                like_index = i
+                break
+        
+        # If LIKE found, merge wildcards (* and %) with adjacent identifiers
+        if like_index is not None and like_index + 1 < len(token_list):
+            # Process tokens after LIKE
+            result_tokens = token_list[:like_index + 1]  # Keep everything up to and including LIKE
+            i = like_index + 1
+            
+            while i < len(token_list):
+                token = token_list[i]
+                
+                # If token is a string literal, keep it as is
+                if token.type == TokenType.STRING:
+                    result_tokens.append(token)
+                    i += 1
+                    continue
+                
+                # If token is a wildcard (* or %), merge with adjacent identifiers
+                if token.type == TokenType.STAR or (token.type == TokenType.IDENTIFIER and token.value == "%"):
+                    # Check if previous token is an identifier (but not LIKE keyword)
+                    if (result_tokens and 
+                        result_tokens[-1].type == TokenType.IDENTIFIER and
+                        result_tokens[-1].value.upper() != "LIKE"):
+                        # Merge wildcard with previous identifier
+                        prev_token = result_tokens.pop()
+                        merged_value = prev_token.value + token.value
+                        # Create a new token with merged value
+                        merged_token = Token(
+                            type=TokenType.IDENTIFIER,
+                            value=merged_value,
+                            position=prev_token.position,
+                            line=prev_token.line,
+                            column=prev_token.column,
+                        )
+                        result_tokens.append(merged_token)
+                    else:
+                        # No previous identifier (or previous is LIKE), keep wildcard as is
+                        result_tokens.append(token)
+                    
+                    # Check if next token is an identifier and merge
+                    if i + 1 < len(token_list) and token_list[i + 1].type == TokenType.IDENTIFIER:
+                        next_token = token_list[i + 1]
+                        last_token = result_tokens[-1]
+                        merged_value = last_token.value + next_token.value
+                        result_tokens[-1] = Token(
+                            type=TokenType.IDENTIFIER,
+                            value=merged_value,
+                            position=last_token.position,
+                            line=last_token.line,
+                            column=last_token.column,
+                        )
+                        i += 2  # Skip both wildcard and next token
+                        continue
+                    
+                    i += 1
+                    continue
+                
+                # For other tokens, check if they should be merged with previous wildcard
+                if (token.type == TokenType.IDENTIFIER and 
+                    result_tokens and 
+                    (result_tokens[-1].type == TokenType.STAR or 
+                     (result_tokens[-1].type == TokenType.IDENTIFIER and result_tokens[-1].value.endswith("%")))):
+                    # Merge identifier with previous wildcard
+                    prev_token = result_tokens.pop()
+                    merged_value = prev_token.value + token.value
+                    result_tokens.append(Token(
+                        type=TokenType.IDENTIFIER,
+                        value=merged_value,
+                        position=prev_token.position,
+                        line=prev_token.line,
+                        column=prev_token.column,
+                    ))
+                    i += 1
+                    continue
+                
+                # Keep token as is
+                result_tokens.append(token)
+                i += 1
+            
+            token_list = result_tokens
+        
+        # Convert tokens to string values
+        tokens = [token.value for token in token_list]
         
         if tokens:
             # Join tokens to form the expression string
@@ -733,12 +829,113 @@ class CommandParser:
                         break
                 continue
 
-            # Positional argument
+            # Handle + or - prefix (for fields command, etc.)
+            prefix = ""
+            if self._match(TokenType.PLUS, TokenType.MINUS):
+                prefix = self._advance().value
+
+            # Positional argument - collect tokens to handle wildcards
             if self._match(TokenType.IDENTIFIER, TokenType.STRING, TokenType.NUMBER):
-                value = self._parse_value()
-                node.arguments.append(
-                    PositionalArgumentNode(value=value, position=self._current_token().position)
-                )
+                # Collect tokens for the argument value, merging wildcards
+                arg_tokens = []
+                start_pos = self._current_token().position
+                
+                # First token
+                token = self._advance()
+                arg_tokens.append(token)
+                
+                # Collect subsequent tokens that are part of the same argument
+                # (merge wildcards with identifiers)
+                while not self._match(TokenType.PIPE, TokenType.EOF):
+                    # Stop at comma (separates arguments)
+                    if self._match(TokenType.COMMA):
+                        break
+                    
+                    # If next token is a wildcard (*), merge with previous identifier
+                    if self._match(TokenType.STAR):
+                        if arg_tokens and arg_tokens[-1].type == TokenType.IDENTIFIER:
+                            # Merge * with previous identifier
+                            prev_token = arg_tokens.pop()
+                            merged_value = prev_token.value + "*"
+                            from RDP.lexer import Token
+                            arg_tokens.append(
+                                Token(
+                                    TokenType.IDENTIFIER,
+                                    merged_value,
+                                    prev_token.position,
+                                    prev_token.line,
+                                    prev_token.column,
+                                )
+                            )
+                            self._advance()  # consume *
+                        else:
+                            # Standalone *, add as is
+                            arg_tokens.append(self._advance())
+                    # If next token is an identifier and previous is a wildcard, merge
+                    elif self._match(TokenType.IDENTIFIER):
+                        if arg_tokens and arg_tokens[-1].type == TokenType.STAR:
+                            # Merge identifier with previous *
+                            prev_token = arg_tokens.pop()
+                            next_token = self._advance()
+                            merged_value = prev_token.value + next_token.value
+                            from RDP.lexer import Token
+                            arg_tokens.append(
+                                Token(
+                                    TokenType.IDENTIFIER,
+                                    merged_value,
+                                    prev_token.position,
+                                    prev_token.line,
+                                    prev_token.column,
+                                )
+                            )
+                        else:
+                            # Regular identifier, but check if it's part of current argument
+                            # (e.g., for patterns like col_*pattern, we want to merge)
+                            peek = self._peek_token()
+                            if peek.type == TokenType.STAR:
+                                # Next is *, so this is part of the pattern, continue collecting
+                                arg_tokens.append(self._advance())
+                            else:
+                                # Next is not *, this is a new argument
+                                break
+                    else:
+                        # Not part of current argument
+                        break
+                
+                # Skip comma if present (for next iteration)
+                if self._match(TokenType.COMMA):
+                    self._advance()
+                
+                # Build the argument value from collected tokens
+                if arg_tokens:
+                    # Combine token values, handling prefix
+                    if len(arg_tokens) == 1:
+                        if arg_tokens[0].type == TokenType.STRING:
+                            # String literal, use as is
+                            value = LiteralNode(
+                                value=prefix + arg_tokens[0].value,
+                                literal_type="string"
+                            )
+                        elif arg_tokens[0].type == TokenType.NUMBER:
+                            # Number, prefix doesn't make sense, but handle it
+                            value = LiteralNode(
+                                value=arg_tokens[0].value,
+                                literal_type="number"
+                            )
+                        else:
+                            # Identifier
+                            value = IdentifierNode(name=prefix + arg_tokens[0].value)
+                    else:
+                        # Multiple tokens merged (e.g., col_* -> col_*)
+                        merged_value = prefix + "".join(t.value for t in arg_tokens)
+                        value = IdentifierNode(name=merged_value)
+                    
+                    node.arguments.append(
+                        PositionalArgumentNode(value=value, position=start_pos)
+                    )
+            elif prefix:
+                # Had a prefix but no valid argument following
+                raise ParserError(f"Expected argument after '{prefix}'", self._current_token())
             else:
                 break
 
